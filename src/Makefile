@@ -38,7 +38,8 @@
 O ?= .
 OBJ ?= $(O)/obj
 
-BUILD_FLAGS=-Werror -Wall -Os
+# It doesn't compile with recent versions of libftdi if the last flag is omitted.
+BUILD_FLAGS=-Werror -Wall -Os -Wno-deprecated
 
 # Can change LATENCY_TIMER value by including it on the make command as: LATENCY_TIMER=12
 ifdef LATENCY_TIMER
@@ -55,13 +56,15 @@ else
    SYNC=-DUSE_ASYNC
 endif
 
+# Added the include path of libftdi and libusb on macOS (using homebrew)
+# Added the libraries/frameworks libusb links to dynamically
 # Want libftdi1 to be the default
 ifdef USE_LIBFTDI
-   CFLAGS=$(BUILD_FLAGS) $(LATENCY) $(SYNC) -UUSE_LIBFTDI1
-   LDFLAGS=$(BUILD_FLAGS) -lftdi
+   CFLAGS=$(BUILD_FLAGS) $(LATENCY) $(SYNC) -UUSE_LIBFTDI1 -I/opt/homebrew/include
+   LDFLAGS=$(BUILD_FLAGS) -framework IOKit -framework CoreFoundation -framework Security
 else
-   CFLAGS=$(BUILD_FLAGS) $(LATENCY) $(SYNC) -DUSE_LIBFTDI1
-   LDFLAGS=$(BUILD_FLAGS) -lftdi1
+   CFLAGS=$(BUILD_FLAGS) $(LATENCY) $(SYNC) -DUSE_LIBFTDI1 -I/opt/homebrew/include
+   LDFLAGS=$(BUILD_FLAGS) -framework IOKit -framework CoreFoundation -framework Security
 endif
 
 all: $(O) $(O)/xvcd
@@ -74,8 +77,10 @@ $(O):
 $(OBJ):
 	mkdir -p $(OBJ)
 
+# Added libftdi and libusb to be statically linked to the xvcd executable
+# Requires homebrew
 $(O)/xvcd: $(OBJ)/io_ftdi.o $(OBJ)/xvcd.o
-	$(CC) -o $@ $^ $(LDFLAGS)
+	$(CC) -o $@ $^ $(LDFLAGS) /opt/homebrew/opt/libftdi/lib/libftdi1.a /opt/homebrew/opt/libusb/lib/libusb-1.0.a
 
 $(OBJ)/%.o: %.c $(OBJ) io_ftdi.h
 	$(CC) -c $< -o $@ $(CFLAGS)
