@@ -38,6 +38,11 @@
 struct ftdi_context ftdi;
 static int vlevel = 0;
 
+// Extra bytes of read-back delay in sync bitbang mode. The FT232H returns
+// TDO one TCK cycle (two bytes) later than the FT2232 parts.
+static int tdo_lag = 0;
+#define TDO_LAG_MAX 2
+
 void io_close(void);
 
 // Pass in the selected FTDI device to be opened
@@ -130,6 +135,10 @@ int io_init(int vendor, int product, const char* serial, unsigned int index, uns
 		return 1;
 	}
 
+	if (ftdi.type == TYPE_232H)
+		tdo_lag = 2;
+	if (vlevel > 0) printf("FTDI chip type %d, TDO lag %d bytes\n", ftdi.type, tdo_lag);
+
 	ftdi_set_bitmode(&ftdi, 0xFF, BITMODE_CBUS);
 	res = ftdi_set_bitmode(&ftdi, IO_OUTPUT, BITMODE_SYNCBB);
 	
@@ -201,8 +210,8 @@ int io_set_period(unsigned int period)
 
 int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *TDO, int bits)
 {
-	unsigned char buffer[2*16384];
-	int i, res; 
+	unsigned char buffer[2*16384 + TDO_LAG_MAX];
+	int i, res, len;
 #ifndef USE_ASYNC
 	int r, t;
 #else 
@@ -213,7 +222,7 @@ int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *T
 #endif
 #endif
 	
-	if (bits > sizeof(buffer)/2)
+	if (bits > (sizeof(buffer) - TDO_LAG_MAX)/2)
 	{
 		fprintf(stderr, "FATAL: out of buffer space for %d bits\n", bits);
 		return -1;
@@ -230,12 +239,17 @@ int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *T
 		buffer[i * 2 + 1] = v | PORT_TCK;
 	}
 
+	// Pad with the last state (no TCK edges) to clock out the delayed TDO samples
+	len = bits * 2 + tdo_lag;
+	for (i = bits * 2; i < len && bits > 0; ++i)
+		buffer[i] = buffer[bits * 2 - 1];
+
 #ifndef USE_ASYNC
 	r = 0;
 	
-	while (r < bits * 2)
+	while (r < len)
 	{
-		t = bits * 2 - r;
+		t = len - r;
 		if (t > FTDI_MAX_WRITESIZE)
 			t = FTDI_MAX_WRITESIZE;
 		
@@ -267,14 +281,14 @@ int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *T
 	}
 #else
 #ifdef USE_LIBFTDI1
-	vres = ftdi_write_data_submit(&ftdi, buffer, bits * 2);
+	vres = ftdi_write_data_submit(&ftdi, buffer, len);
 	if (!vres)
 	{
 		fprintf(stderr, "ftdi_write_data_submit (%s)\n", ftdi_get_error_string(&ftdi));
 		return -1;
 	}
 #else
-	res = ftdi_write_data_async(&ftdi, buffer, bits * 2);
+	res = ftdi_write_data_async(&ftdi, buffer, len);
 	if (res < 0)
 	{
 		fprintf(stderr, "ftdi_write_data_async %d (%s)\n", res, ftdi_get_error_string(&ftdi));
@@ -284,9 +298,9 @@ int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *T
 
 	i = 0;
 	
-	while (i < bits * 2)
+	while (i < len)
 	{
-		res = ftdi_read_data(&ftdi, buffer + i, bits * 2 - i);
+		res = ftdi_read_data(&ftdi, buffer + i, len - i);
 
 		if (res < 0)
 		{
@@ -302,7 +316,7 @@ int io_scan(const unsigned char *TMS, const unsigned char *TDI, unsigned char *T
 	
 	for (i = 0; i < bits; ++i)
 	{
-		if (buffer[i * 2 + 1] & PORT_TDO)
+		if (buffer[i * 2 + 1 + tdo_lag] & PORT_TDO)
 		{
 			TDO[i/8] |= 1 << (i&7);
 		}
